@@ -1,0 +1,64 @@
+name: PR Grader
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  grade-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build static action payload
+        run: |
+          cat > payload.json << 'EOF'
+          {
+            "seed": 123,
+            "pr_url": "${{ github.event.pull_request.html_url }}",
+            "action": {
+              "overall_decision": "request_changes",
+              "issues": [
+                {
+                  "file": "auth.py",
+                  "line": 5,
+                  "category": "security",
+                  "severity": "critical",
+                  "description": "placeholder issue from workflow"
+                }
+              ]
+            }
+          }
+          EOF
+
+      - name: Call OpenEnv grader endpoint
+        env:
+          GRADER_URL: ${{ secrets.GRADER_URL }}
+        run: |
+          curl -sS -X POST "${GRADER_URL%/}/github/pr-review-grade" \
+            -H "Content-Type: application/json" \
+            -H "ngrok-skip-browser-warning: true" \
+            --data @payload.json > grade_response.json
+
+          python - << 'PY'
+          import json
+          data = json.load(open('grade_response.json', 'r', encoding='utf-8'))
+          summary = data.get('summary_markdown', 'No summary_markdown found')
+          open('summary.md', 'w', encoding='utf-8').write(summary)
+          print('summary_length=', len(summary))
+          PY
+
+      - name: Post grading summary comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('summary.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body
+            });
